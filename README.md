@@ -2,7 +2,7 @@
 
 A quiet desktop front end for [Ollama](https://ollama.com). Local models, no accounts, no cloud, no telemetry.
 
-![Shimondle](docs/app.png)
+![Shimondle](docs/empty.png)
 
 ## What it does
 
