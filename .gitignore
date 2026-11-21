@@ -1,0 +1,9 @@
+node_modules/
+dist/
+shots/
+src-tauri/target/
+src-tauri/gen/schemas/
+.DS_Store
+*.log
+logo-check.png
+logo-cmp.png
