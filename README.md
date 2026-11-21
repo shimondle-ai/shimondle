@@ -8,6 +8,7 @@ A quiet desktop front end for [Ollama](https://ollama.com). Local models, no acc
 
 - **Talks to your local Ollama** at `http://127.0.0.1:11434` (configurable), streaming tokens as they arrive.
 - **Model picker** listing every model you have pulled, with size and quantisation.
+- **Thinking mode toggle** for models that support it: leave the reasoning on, or turn it off to answer directly. Thoughts stream live and stay expandable on the message.
 - **Real chat history** with multiple conversations, auto-titles, delete, regenerate and stop.
 - **Markdown rendering** with syntax-labelled code blocks and per-block copy.
 - **Temperature, context window and system prompt** per app, not per chat.
@@ -45,11 +46,13 @@ src-tauri/src/lib.rs Rust: /api/tags, /api/chat streaming, cancellation
 
 All HTTP happens in Rust (`reqwest`), so the webview never needs network
 access and there is no CORS surface. Chat responses come back over a Tauri
-`Channel` as NDJSON deltas; `cancel_chat` flips a flag that the stream loop
-checks between chunks.
+`Channel` as NDJSON deltas (`content` and `thinking`); `cancel_chat` flips a
+flag that the stream loop checks between chunks. Models that advertise the
+`thinking` capability get a `think` boolean on each request.
 
 `npm run shot` renders the UI in headless Chrome with the Ollama bridge
-mocked, which is how the screenshots in `docs/` were made.
+mocked, which is how the screenshots in `docs/` were made. `npm run smoke`
+checks the thinking toggle and both request paths against the same mock.
 
 ## Design
 

@@ -27,6 +27,7 @@ const state = {
 
 const ICON = {
   spark: '<svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor"><path d="M8 1.4l1.5 4.1L13.6 7 9.5 8.5 8 12.6 6.5 8.5 2.4 7l4.1-1.5L8 1.4z"/></svg>',
+  think: '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M8 1.4l1.5 4.1L13.6 7 9.5 8.5 8 12.6 6.5 8.5 2.4 7l4.1-1.5L8 1.4z"/></svg>',
   chat: '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13.5 9.2a2 2 0 0 1-2 2H5.6L3 13.4v-9a2 2 0 0 1 2-2h6.5a2 2 0 0 1 2 2v4.8z"/></svg>',
   code: '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5.6 4.2 2.2 8l3.4 3.8M10.4 4.2 13.8 8l-3.4 3.8"/></svg>',
   write: '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M11.2 2.6l2.2 2.2-7.7 7.7-2.9.7.7-2.9 7.7-7.7z"/></svg>',
@@ -81,6 +82,7 @@ async function refreshModels(silent = true) {
   }
   renderSidebar();
   renderModelChip();
+  renderThinkChip();
 }
 
 function flashStatus(text: string) {
@@ -115,12 +117,36 @@ function renderSidebar() {
   const model = state.models.find((m) => m.name === state.settings.model);
   $("#model-name").textContent = model ? model.name : state.settings.model || "No model";
   $("#model-sub").textContent = model
-    ? [model.params, model.quant, formatSize(model.size)].filter(Boolean).join(" · ")
+    ? [
+        model.params,
+        model.quant,
+        formatSize(model.size),
+        model.thinking ? (state.settings.thinking ? "thinking on" : "thinking off") : "",
+      ].filter(Boolean).join(" · ")
     : state.online ? "Pick a model" : "Connect Ollama";
 }
 
 function renderModelChip() {
   $("#chip-model").textContent = state.settings.model || "no model";
+  renderThinkChip();
+}
+
+function currentModel(): ModelInfo | undefined {
+  return state.models.find((m) => m.name === state.settings.model);
+}
+
+function renderThinkChip() {
+  const btn = $("#composer-think") as HTMLButtonElement | null;
+  if (!btn) return;
+  const supports = !!currentModel()?.thinking;
+  const on = supports && state.settings.thinking;
+  btn.hidden = !supports;
+  btn.disabled = state.streaming;
+  btn.classList.toggle("on", on);
+  btn.setAttribute("aria-pressed", String(on));
+  btn.title = on
+    ? "Thinking is on: the model reasons before answering. Click to answer directly."
+    : "Thinking is off. Click to let the model reason before answering.";
 }
 
 const escapeHtml = (s: string) =>
@@ -154,6 +180,14 @@ function renderMain() {
   }
 }
 
+function thoughtsHtml(text?: string): string {
+  if (!text || !text.trim()) return "";
+  return `<details class="thoughts">
+    <summary>${ICON.think}Thoughts</summary>
+    <div class="thought-body">${escapeHtml(text.trim())}</div>
+  </details>`;
+}
+
 function messageHtml(m: Message): string {
   if (m.role === "user") {
     return `<div class="msg user" data-mid="${m.id}"><div class="bubble">${escapeHtml(m.content)}</div></div>`;
@@ -162,6 +196,7 @@ function messageHtml(m: Message): string {
   return `<div class="msg assistant" data-mid="${m.id}">
     <img class="avatar" src="${markSrc()}" alt="" />
     <div class="bodywrap" style="flex:1;min-width:0">
+      ${thoughtsHtml(m.thinking)}
       <div class="body">${renderMarkdown(m.content)}${m.error ? `<div class="error-line">${escapeHtml(m.error)}</div>` : ""}</div>
       ${m.content || m.error ? `<div class="msg-tools">
         <button class="tool" data-copy-msg="${m.id}">${ICON.copy} Copy</button>
@@ -248,10 +283,23 @@ async function send(text?: string) {
     .map((m) => ({ role: m.role, content: m.content }));
 
   let pending = "";
+  let thinking = "";
   let frame = 0;
   const paint = () => {
     frame = 0;
-    if (state.streamNode) state.streamNode.innerHTML = renderMarkdown(pending) + '<span class="caret"></span>';
+    if (!state.streamNode) return;
+    const thought = thinking.trim();
+    const live = thought
+      ? `<div class="thought-live">
+          <div class="thought-head">${ICON.think}Thinking<span class="thinking-dots"><i></i><i></i><i></i></span></div>
+          <div class="thought-text">${escapeHtml(thought)}</div>
+        </div>`
+      : "";
+    state.streamNode.innerHTML = live + (pending
+      ? renderMarkdown(pending) + '<span class="caret"></span>'
+      : (live ? "" : '<span class="caret"></span>'));
+    const scroller = state.streamNode.querySelector(".thought-text");
+    if (scroller && !pending) scroller.scrollTop = scroller.scrollHeight;
     scrollToBottom();
   };
 
@@ -264,15 +312,22 @@ async function send(text?: string) {
       messages: history,
       temperature: state.settings.temperature,
       numCtx: state.settings.numCtx,
+      think: currentModel()?.thinking ? state.settings.thinking : undefined,
     },
     {
       onDelta: (chunk) => {
         pending += chunk;
         if (!frame) frame = requestAnimationFrame(paint);
       },
+      onThinking: (chunk) => {
+        thinking += chunk;
+        assistantMsg.thinking = thinking;
+        if (!frame) frame = requestAnimationFrame(paint);
+      },
       onDone: ({ stopped: wasStopped }) => {
         stopped = wasStopped;
         assistantMsg.content = pending;
+        assistantMsg.thinking = thinking.trim() || undefined;
         state.streaming = false;
         state.streamNode = null;
         state.requestId = null;
@@ -287,6 +342,7 @@ async function send(text?: string) {
       },
       onError: (message) => {
         assistantMsg.content = pending;
+        assistantMsg.thinking = thinking.trim() || undefined;
         assistantMsg.error = message;
         state.streaming = false;
         state.streamNode = null;
@@ -334,6 +390,8 @@ async function copyText(text: string) {
 function updateSendState() {
   const btn = $("#send") as HTMLButtonElement;
   const input = $("#input") as HTMLTextAreaElement;
+  const thinkBtn = $("#composer-think") as HTMLButtonElement | null;
+  if (thinkBtn) thinkBtn.disabled = state.streaming;
   if (state.streaming) { btn.disabled = false; return; }
   btn.disabled = !input.value.trim();
 }
@@ -361,7 +419,7 @@ function openModelMenu(anchor: HTMLElement) {
         .map(
           (m) => `<button class="menu-item ${m.name === state.settings.model ? "active" : ""}" data-model="${escapeHtml(m.name)}">
             <span class="mi-main"><span class="mi-name">${escapeHtml(m.name)}</span>
-            <span class="mi-sub">${[m.params, m.quant, formatSize(m.size)].filter(Boolean).join(" · ") || "local"}</span></span>
+            <span class="mi-sub">${[m.params, m.quant, formatSize(m.size)].filter(Boolean).join(" · ") || "local"}${m.thinking ? ' <span class="mi-tag">thinking</span>' : ""}</span></span>
             ${m.name === state.settings.model ? '<span class="mi-check">✓</span>' : ""}
           </button>`,
         )
@@ -514,6 +572,13 @@ function bind() {
 
   $("#model-btn").addEventListener("click", (e) => { e.stopPropagation(); openModelMenu($("#model-btn")); });
   $("#composer-model").addEventListener("click", (e) => { e.stopPropagation(); openModelMenu($("#composer-model")); });
+  $("#composer-think").addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (state.streaming) return;
+    state.settings.thinking = !state.settings.thinking;
+    saveSettings(state.settings);
+    renderThinkChip();
+  });
   $("#settings-btn").addEventListener("click", openSettings);
   $("#status").addEventListener("click", () => refreshModels(false));
 

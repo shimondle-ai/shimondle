@@ -6,6 +6,7 @@ export interface ModelInfo {
   params: string;
   quant: string;
   family: string;
+  thinking: boolean;
 }
 
 export interface ChatMsg { role: "system" | "user" | "assistant"; content: string }
@@ -17,10 +18,12 @@ export interface ChatOptions {
   messages: ChatMsg[];
   temperature: number;
   numCtx: number;
+  think?: boolean;
 }
 
 interface ChatEvent {
   delta?: string | null;
+  thinking?: string | null;
   done: boolean;
   error?: string | null;
   evalCount?: number | null;
@@ -30,9 +33,10 @@ interface ChatEvent {
 export const isDesktop = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 const MOCK_MODELS: ModelInfo[] = [
-  { name: "llama3.2:3b", size: 2_019_393_188, params: "3.2B", quant: "Q4_K_M", family: "llama" },
-  { name: "qwen2.5:7b", size: 4_683_090_664, params: "7.6B", quant: "Q4_K_M", family: "qwen2" },
-  { name: "mistral:7b", size: 4_368_437_122, params: "7.2B", quant: "Q4_0", family: "llama" },
+  { name: "qwen3.5:9b", size: 7_639_229_431, params: "9B", quant: "MLX", family: "qwen3", thinking: true },
+  { name: "qwen2.5:7b", size: 4_683_090_664, params: "7.6B", quant: "Q4_K_M", family: "qwen2", thinking: false },
+  { name: "llama3.2:3b", size: 2_019_393_188, params: "3.2B", quant: "Q4_K_M", family: "llama", thinking: false },
+  { name: "mistral:7b", size: 4_368_437_122, params: "7.2B", quant: "Q4_0", family: "llama", thinking: false },
 ];
 
 export async function listModels(baseUrl: string): Promise<ModelInfo[]> {
@@ -52,18 +56,31 @@ let activeId: string | null = null;
 
 export function streamChat(
   opts: ChatOptions,
-  handlers: { onDelta: (t: string) => void; onDone: (e: { stopped: boolean }) => void; onError: (m: string) => void },
+  handlers: {
+    onDelta: (t: string) => void;
+    onThinking?: (t: string) => void;
+    onDone: (e: { stopped: boolean }) => void;
+    onError: (m: string) => void;
+  },
 ): string {
   const requestId = Math.random().toString(36).slice(2);
   activeId = requestId;
 
   if (!isDesktop()) {
     const canned = mockReply(opts);
+    const thoughts = opts.think ? mockThinking(opts) : "";
     let i = 0;
+    let t = 0;
     let stopped = false;
     const timer = setInterval(() => {
       if (activeId !== requestId) stopped = true;
       if (stopped) { clearInterval(timer); handlers.onDone({ stopped: true }); return; }
+      if (t < thoughts.length) {
+        const step = 2 + Math.floor(Math.random() * 4);
+        handlers.onThinking?.(thoughts.slice(t, t + step));
+        t += step;
+        return;
+      }
       const step = 3 + Math.floor(Math.random() * 5);
       handlers.onDelta(canned.slice(i, i + step));
       i += step;
@@ -75,6 +92,7 @@ export function streamChat(
   const channel = new Channel<ChatEvent>();
   channel.onmessage = (event) => {
     if (event.error) { handlers.onError(event.error); return; }
+    if (event.thinking) handlers.onThinking?.(event.thinking);
     if (event.delta) handlers.onDelta(event.delta);
     if (event.done) {
       if (activeId === requestId) activeId = null;
@@ -91,6 +109,7 @@ export function streamChat(
       temperature: opts.temperature,
       numCtx: opts.numCtx,
       requestId,
+      think: opts.think,
     },
     onEvent: channel,
   }).catch((err) => {
@@ -108,6 +127,12 @@ export async function stopChat(): Promise<void> {
   if (isDesktop()) {
     try { await invoke("cancel_chat", { requestId: id }); } catch { /* ignore */ }
   }
+}
+
+function mockThinking(opts: ChatOptions): string {
+  const last = opts.messages.filter((m) => m.role === "user").at(-1)?.content ?? "the question";
+  const short = last.length > 52 ? last.slice(0, 52).trim() + "…" : last;
+  return `The user wants to know about ${short}. I should keep it concrete: what actually happens locally, where the tradeoffs are, and one example they can run. Lead with the short answer, then three points. No need to hedge.`;
 }
 
 function mockReply(opts: ChatOptions): string {

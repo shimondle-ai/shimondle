@@ -6,6 +6,7 @@ export interface Message {
   content: string;
   ts: number;
   model?: string;
+  thinking?: string;
   error?: string;
 }
 
@@ -25,6 +26,7 @@ export interface Settings {
   numCtx: number;
   theme: "dark" | "light";
   model: string;
+  thinking: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -34,6 +36,7 @@ export const DEFAULT_SETTINGS: Settings = {
   numCtx: 4096,
   theme: "dark",
   model: "",
+  thinking: true,
 };
 
 const CONVOS_KEY = "shimondle.convos.v1";

@@ -1,14 +1,15 @@
 {
   "name": "shimondle",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "shot": "node scripts/shot.mjs"
+    "shot": "node scripts/shot.mjs",
+    "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0"

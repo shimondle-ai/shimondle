@@ -1,6 +1,6 @@
 [package]
 name = "shimondle"
-version = "0.1.0"
+version = "0.2.0"
 description = "A quiet local front end for Ollama"
 authors = ["Shimondle"]
 edition = "2021"

@@ -33,6 +33,7 @@ pub struct ModelInfo {
     params: String,
     quant: String,
     family: String,
+    thinking: bool,
 }
 
 #[tauri::command]
@@ -68,6 +69,10 @@ async fn list_models(base_url: String) -> Result<Vec<ModelInfo>, String> {
             params: m["details"]["parameter_size"].as_str().unwrap_or_default().to_string(),
             quant: m["details"]["quantization_level"].as_str().unwrap_or_default().to_string(),
             family: m["details"]["family"].as_str().unwrap_or_default().to_string(),
+            thinking: m["capabilities"]
+                .as_array()
+                .map(|caps| caps.iter().any(|c| c.as_str() == Some("thinking")))
+                .unwrap_or(false),
         })
         .collect())
 }
@@ -101,12 +106,14 @@ struct ChatArgs {
     temperature: f64,
     num_ctx: u32,
     request_id: String,
+    think: Option<bool>,
 }
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ChatEvent {
     delta: Option<String>,
+    thinking: Option<String>,
     done: bool,
     error: Option<String>,
     eval_count: Option<u64>,
@@ -114,7 +121,7 @@ struct ChatEvent {
 }
 
 fn event_delta(chunk: &str, _id: &str) -> ChatEvent {
-    ChatEvent { delta: Some(chunk.to_string()), done: false, error: None, eval_count: None, total_ms: None }
+    ChatEvent { delta: Some(chunk.to_string()), thinking: None, done: false, error: None, eval_count: None, total_ms: None }
 }
 
 #[tauri::command]
@@ -134,7 +141,7 @@ async fn chat(args: ChatArgs, on_event: Channel<ChatEvent>) -> Result<(), String
         messages.push(json!({ "role": m.role, "content": m.content }));
     }
 
-    let body = json!({
+    let mut body = json!({
         "model": args.model,
         "messages": messages,
         "stream": true,
@@ -143,6 +150,9 @@ async fn chat(args: ChatArgs, on_event: Channel<ChatEvent>) -> Result<(), String
             "num_ctx": args.num_ctx
         }
     });
+    if let Some(think) = args.think {
+        body["think"] = json!(think);
+    }
 
     let res = match client
         .post(endpoint(&args.base_url, "/api/chat"))
@@ -153,7 +163,7 @@ async fn chat(args: ChatArgs, on_event: Channel<ChatEvent>) -> Result<(), String
         Ok(r) => r,
         Err(e) => {
             let msg = format!("Can't reach Ollama: {e}");
-            let _ = on_event.send(ChatEvent { delta: None, done: true, error: Some(msg.clone()), eval_count: None, total_ms: None });
+            let _ = on_event.send(ChatEvent { delta: None, thinking: None, done: true, error: Some(msg.clone()), eval_count: None, total_ms: None });
             return Err(msg);
         }
     };
@@ -166,7 +176,7 @@ async fn chat(args: ChatArgs, on_event: Channel<ChatEvent>) -> Result<(), String
             .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
             .unwrap_or_else(|| text.chars().take(240).collect());
         let msg = format!("Ollama error {status}: {detail}");
-        let _ = on_event.send(ChatEvent { delta: None, done: true, error: Some(msg.clone()), eval_count: None, total_ms: None });
+        let _ = on_event.send(ChatEvent { delta: None, thinking: None, done: true, error: Some(msg.clone()), eval_count: None, total_ms: None });
         return Err(msg);
     }
 
@@ -177,7 +187,7 @@ async fn chat(args: ChatArgs, on_event: Channel<ChatEvent>) -> Result<(), String
     while let Some(chunk) = stream.next().await {
         if is_cancelled(&args.request_id) {
             clear_cancelled(&args.request_id);
-            let _ = on_event.send(ChatEvent { delta: None, done: true, error: None, eval_count, total_ms: None });
+            let _ = on_event.send(ChatEvent { delta: None, thinking: None, done: true, error: None, eval_count, total_ms: None });
             return Ok(());
         }
 
@@ -185,7 +195,7 @@ async fn chat(args: ChatArgs, on_event: Channel<ChatEvent>) -> Result<(), String
             Ok(b) => b,
             Err(e) => {
                 let msg = format!("stream: {e}");
-                let _ = on_event.send(ChatEvent { delta: None, done: true, error: Some(msg.clone()), eval_count, total_ms: None });
+                let _ = on_event.send(ChatEvent { delta: None, thinking: None, done: true, error: Some(msg.clone()), eval_count, total_ms: None });
                 return Err(msg);
             }
         };
@@ -204,8 +214,21 @@ async fn chat(args: ChatArgs, on_event: Channel<ChatEvent>) -> Result<(), String
             };
 
             if let Some(err) = value.get("error").and_then(|e| e.as_str()) {
-                let _ = on_event.send(ChatEvent { delta: None, done: true, error: Some(err.to_string()), eval_count, total_ms: None });
+                let _ = on_event.send(ChatEvent { delta: None, thinking: None, done: true, error: Some(err.to_string()), eval_count, total_ms: None });
                 return Ok(());
+            }
+
+            if let Some(thought) = value["message"]["thinking"].as_str() {
+                if !thought.is_empty() {
+                    let _ = on_event.send(ChatEvent {
+                        delta: None,
+                        thinking: Some(thought.to_string()),
+                        done: false,
+                        error: None,
+                        eval_count: None,
+                        total_ms: None,
+                    });
+                }
             }
 
             if let Some(text) = value["message"]["content"].as_str() {
@@ -220,14 +243,14 @@ async fn chat(args: ChatArgs, on_event: Channel<ChatEvent>) -> Result<(), String
 
             if value["done"].as_bool().unwrap_or(false) {
                 let total_ms = value["total_duration"].as_u64().map(|ns| ns / 1_000_000);
-                let _ = on_event.send(ChatEvent { delta: None, done: true, error: None, eval_count, total_ms });
+                let _ = on_event.send(ChatEvent { delta: None, thinking: None, done: true, error: None, eval_count, total_ms });
                 clear_cancelled(&args.request_id);
                 return Ok(());
             }
         }
     }
 
-    let _ = on_event.send(ChatEvent { delta: None, done: true, error: None, eval_count, total_ms: None });
+    let _ = on_event.send(ChatEvent { delta: None, thinking: None, done: true, error: None, eval_count, total_ms: None });
     clear_cancelled(&args.request_id);
     Ok(())
 }
